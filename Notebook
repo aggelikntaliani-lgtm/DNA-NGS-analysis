@@ -1,0 +1,129 @@
+#Directories and downloads
+mkdir -p ~/dc_workshop/data/untrimmed_fastq
+cd ~/dc_workshop/data/untrimmed_fastq
+curl -O ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR258/004/SRR2589044/SRR2589044_1.fastq.gz
+curl -O ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR258/004/SRR2589044/SRR2589044_2.fastq.gz
+curl -O ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR258/003/SRR2584863/SRR2584863_1.fastq.gz
+curl -O ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR258/003/SRR2584863/SRR2584863_2.fastq.gz
+curl -O ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR258/006/SRR2584866/SRR2584866_1.fastq.gz
+curl -O ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR258/006/SRR2584866/SRR2584866_2.fastq.gz
+cd ~/dc_workshop
+dir -p data/ref_genome
+mkdir -p data/ref_genome
+
+#QC
+fastqc *.fastq –o
+
+#  REFERENCE GENOME & BWA INDEX
+mkdir -p ~/dc_workshop/data/results
+fastp -i SRR2584863_1.fastq -I SRR2584863_2.fastq 
+fastp -i SRR2584866_1.fastq -I SRR2584866_2.fastq
+fastp -i SRR2589044_1.fastq -I SRR2589044_2.fastq
+
+curl -L -o data/ref_genome/ecoli_rel606.fasta.gz ftp://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/017/985/GCA_000017985.1_ASM1798v1/GCA_000017985.1_ASM1798v1_genomic.fna.gz
+bwa index *.fasta
+bwa index ecoli_ref_clean.fasta
+#Alignment and quality check 
+bwa mem -t 4 -R "@RG\tID:SRR2584863\tSM:SRR2584863\tPL:ILLUMINA" \
+>   data/ref_genome/ecoli_ref_clean.fasta
+samtools flagstat data/aligned_reads/SRR2584863.paired.sam
+bwa mem -t 4 -R "@RG\tID:SRR2584866\tSM:SRR2584866\tPL:ILLUMINA" \
+clean.fa>   data/ref_genome/ecoli_ref_clean.fasta
+samtools flagstat data/aligned_reads/SRR2584866.paired.sam
+bwa mem -t 4 -R "@RG\tID:SRR2589044\tSM:SRR2589044\tPL:ILLUMINA" \
+med.fastq
+samtools flagstat data/aligned_reads/SRR2589044.paired.sam
+gatk MarkDuplicatesSpark
+samtools sort -m 500M -o data/aligned_reads/SRR2584863.sorted.bam data/aligned_reads/SRR2584863.paired.sam
+samtools sort -m 500M -o data/aligned_reads/SRR2584866.sorted.bam data/aligned_reads/SRR2584866.paired.sam
+samtools sort -m 500M -o data/aligned_reads/SRR2589044.sorted.bam data/aligned_reads/SRR2589044.paired.sam
+
+# SAMTOOLS SORT & GATK MARKDUPLICATES
+samtools sort -m 500M -o data/aligned_reads/SRR2584863.sorted.bam data/aligned_reads/SRR2584863.paired.sam
+samtools sort -m 500M -o data/aligned_reads/SRR2584866.sorted.bam data/aligned_reads/SRR2584866.paired.sam
+samtools sort -m 500M -o data/aligned_reads/SRR2589044.sorted.bam data/aligned_reads/SRR2589044.paired.sam
+
+gatk MarkDuplicates \
+>   -I data/aligned_reads/SRR2584863.sorted.bam \
+>   -O data/aligned_reads/SRR2584863_sorted_dedup_reads.bam \
+>   -M data/aligned_reads/SRR2584863_metrics.txt
+gatk MarkDuplicates \
+>   -I data/aligned_reads/SRR2584866.sorted.bam \
+>   -O data/aligned_reads/SRR2584866_sorted_dedup_reads.bam \
+>   -M data/aligned_reads/SRR2584866_metrics.txt
+gatk MarkDuplicates \
+>   -I data/aligned_reads/SRR2589044.sorted.bam \
+>   -O data/aligned_reads/SRR2589044_sorted_dedup_reads.bam \
+>   -M data/aligned_reads/SRR2589044_metrics.txt
+# skip Base Quality Score Recalibration – BQSR, because I have  E.Coli
+# From now on continue with 1 sample!!!
+# Collect Alignment & Insert Size Metrics
+cd ~/dc_workshop/data
+ref="ref_genome/ecoli_ref_clean.fasta"
+gatk CollectAlignmentSummaryMetrics -R $ref -I aligned_reads/SRR2584863_sorted_dedup_reads.bam -O aligned_reads/SRR2584863_alignment_metrics.txt
+gatk CollectInsertSizeMetrics -I aligned_reads/SRR2584863_sorted_dedup_reads.bam -O aligned_reads/SRR2584863_insert_size_metrics.txt -H aligned_reads/SRR2584863_insert_size_histogram.pdf	
+
+# Call Variants (HaplotypeCaller)
+gatk HaplotypeCaller -R $ref -I aligned_reads/SRR2584863_sorted_dedup_reads.bam -O results/SRR2584863_raw_variants.vcf
+
+# Extract SNPs and INDELs.
+ref="ref_genome/ecoli_ref_clean.fasta"
+gatk SelectVariants -R $ref -V results/SRR2584863_raw_variants.vcf --select-type-to-include SNP -O results/SRR2584863_raw_snps.vcf
+gatk SelectVariants -R $ref -V results/SRR2584863_raw_variants.vcf --select-type-to-include INDEL -O results/SRR2584863_raw_indels.vcf
+
+
+#SNP filtering
+gatk VariantFiltration \
+  -R $ref \
+  -V results/SRR2584863_raw_snps.vcf \
+  -O results/SRR2584863_filtered_snps.vcf \
+  -filter-name "QD_filter" -filter "QD < 2.0" \
+  -filter-name "FS_filter" -filter "FS > 60.0" \
+  -filter-name "MQ_filter" -filter "MQ < 40.0" \
+  -filter-name "SOR_filter" -filter "SOR > 3.0" \
+  -filter-name "MQRankSum_filter" -filter "MQRankSum < -12.5" \
+  -filter-name "ReadPosRankSum_filter" -filter "ReadPosRankSum < -8.0"
+
+#indels  filtering
+gatk VariantFiltration \
+  -R $ref \
+  -V results/SRR2584863_raw_indels.vcf \
+  -O results/SRR2584863_filtered_indels.vcf \
+  -filter-name "QD_filter" -filter "QD < 2.0" \
+  -filter-name "FS_filter" -filter "FS > 200.0" \
+  -filter-name "SOR_filter" -filter "SOR > 10.0"
+
+#select variants that pass filter
+	#SNP
+gatk SelectVariants \
+  --exclude-filtered \
+  -V results/SRR2584863_filtered_snps.vcf \
+  -O results/SRR2584863_analysis_ready_snps.vcf
+	#Indel
+gatk SelectVariants \
+  --exclude-filtered \
+  -V results/SRR2584863_filtered_indels.vcf \
+  -O results/SRR2584863_analysis_ready_indels.vcf
+
+# Annotate  SnpEff
+	#SNP
+snpeff download -v Escherichia_coli_str_k_12_substr_mg1655
+snpeff -v Escherichia_coli_str_k_12_substr_mg1655 \
+  results/SRR2584863_analysis_ready_snps.vcf \
+  > results/SRR2584863_annotated_snps.vcf
+	#Indels
+snpeff -v Escherichia_coli_str_k_12_substr_mg1655 \
+  results/SRR2584863_analysis_ready_indels.vcf \
+  > results/SRR2584863_annotated_indels.vcf
+
+#variants to table 
+#SNP
+gatk VariantsToTable \
+  -V results/SRR2584863_analysis_ready_snps.vcf \
+  -F CHROM -F POS -F REF -F ALT -F TYPE \
+  -O results/SRR2584863_output_snps.table
+	#indels
+gatk VariantsToTable \
+  -V results/SRR2584863_analysis_ready_indels.vcf \
+  -F CHROM -F POS -F REF -F ALT -F TYPE \
+  -O results/SRR2584863_output_indels.table
